@@ -108,3 +108,69 @@ jobs:
       - run: |
           ./pkgm.ts i spotify_player
           spotify_player --version
+
+  # Validates `sudo pkgm install` behaviour fixed in 2b33f20:
+  #  - privilege drop so pkgx cache stays owned by $SUDO_USER, not root
+  #  - HOME override so the cache lands under the invoking user's tree
+  #  - fallback to running pkgx as root when it lives under /root/.pkgx
+  #    and is therefore unreachable to $SUDO_USER (pkgxdev/pkgm#68)
+  # Linux-only: the /root/.pkgx scenario doesn't arise on macOS in practice.
+  sudo-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pkgxdev/setup@v4
+
+      - name: sudo install drops privileges and overrides HOME
+        run: |
+          set -eux
+          # marker to scope ownership checks to files created by this install
+          touch /tmp/pkgm-sudo-marker
+          sudo ./pkgm.ts i hyperfine
+          test -x /usr/local/bin/hyperfine
+          # HOME override: pkgx must not have cached under /root/. Use
+          # `sudo test` because /root/ is mode 700 — an unprivileged stat
+          # would silently report "not exists" regardless of the truth.
+          if sudo test -e /root/.pkgx; then
+            echo "::error::pkgx cached under /root/.pkgx — HOME override failed"
+            exit 1
+          fi
+          # Privilege drop: nothing newly created under ~/.pkgx should be
+          # owned by root. Any root-owned file here means pkgx ran as root
+          # despite SUDO_USER being set.
+          owned_by_root=$(sudo find "$HOME/.pkgx" -newer /tmp/pkgm-sudo-marker -user root -print 2>/dev/null || true)
+          if [ -n "$owned_by_root" ]; then
+            echo "::error::pkgx cache files created as root under \$HOME/.pkgx:"
+            echo "$owned_by_root"
+            exit 1
+          fi
+
+      - name: sudo install falls back when pkgx is unreachable as $SUDO_USER
+        # Must be last — this step strips pkgx from every location the
+        # runner user can reach, leaving only /root/.pkgx, which the
+        # subsequent shebang resolution still needs to walk through sudo.
+        run: |
+          set -eux
+          # Stage pkgx exclusively under /root so that reachable_as() returns
+          # false for the runner user and no alternative is found.
+          pkgx_src=$(command -v pkgx)
+          sudo mkdir -p /root/.pkgx/bin
+          sudo cp "$pkgx_src" /root/.pkgx/bin/pkgx
+          # Wipe every alternative the resolver looks for:
+          #   ~/.pkgx/pkgx.sh/v*/bin/pkgx, ~/.local/bin/pkgx, /usr/local/bin/pkgx
+          rm -rf "$HOME/.pkgx"
+          sudo rm -f /usr/local/bin/pkgx "$HOME/.local/bin/pkgx"
+          # Invoke pkgm.ts with the /root pkgx on PATH; PKGM_DEBUG turns on
+          # the diagnostic we grep for. `sudo env PATH=...` is the canonical
+          # way around the default secure_path policy in Ubuntu's sudoers.
+          set +e
+          out=$(sudo env PATH="/root/.pkgx/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" PKGM_DEBUG=1 ./pkgm.ts i gum 2>&1)
+          rc=$?
+          set -e
+          echo "$out"
+          # Regression check for pkgxdev/pkgm#68: no crash with
+          # "unable to execute ...: Permission denied"
+          test $rc -eq 0
+          test -x /usr/local/bin/gum
+          # The PKGM_DEBUG-gated diagnostic must fire on this path.
+          echo "$out" | grep -q "is not reachable as $USER"

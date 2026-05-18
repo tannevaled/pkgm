@@ -556,12 +556,13 @@ function get_pkgx() {
 }
 
 async function* ls() {
-  for (
-    const path of [
-      new Path("/usr/local/pkgs"),
-      Path.home().join(".local/pkgs"),
-    ]
-  ) {
+  // On POSIX a host can have both a system-wide /usr/local/pkgs and
+  // a per-user ~/.local/pkgs install — we list both. Windows has only
+  // the per-user prefix from install_prefix() (no /usr/local concept).
+  const candidates = Deno.build.os == "windows"
+    ? [install_prefix().join("pkgs")]
+    : [new Path("/usr/local/pkgs"), Path.home().join(".local/pkgs")];
+  for (const path of candidates) {
     if (!path.isDirectory()) continue;
     const dirs = [path];
     let dir: Path | undefined;
@@ -680,11 +681,14 @@ function writable(path: string) {
 
 async function outdated() {
   const pkgs: Installation[] = [];
-  for await (const pkg of walk_pkgs(new Path("/usr/local/pkgs"))) {
-    pkgs.push(pkg);
-  }
-  for await (const pkg of walk_pkgs(Path.home().join(".local/pkgs"))) {
-    pkgs.push(pkg);
+  // See ls(): POSIX scans both prefixes, Windows only the user one.
+  const candidates = Deno.build.os == "windows"
+    ? [install_prefix().join("pkgs")]
+    : [new Path("/usr/local/pkgs"), Path.home().join(".local/pkgs")];
+  for (const candidate of candidates) {
+    for await (const pkg of walk_pkgs(candidate)) {
+      pkgs.push(pkg);
+    }
   }
 
   const { pkgs: raw_graph } = await hydrate(
@@ -780,13 +784,17 @@ async function update() {
 }
 
 function install_prefix() {
-  // Windows has no /usr/local analogue; the per-user prefix is the
-  // only sensible default for now. System-wide installs on Windows
-  // (e.g. under %ProgramFiles%) require UAC elevation modelling and
-  // are out of scope for the initial port — see the draft PR
-  // description for the design questions.
+  // Windows: per-user only, under %LOCALAPPDATA%\pkgm. Mirrors pkgx's
+  // own pattern (installer.ps1 in pkgxdev/setup uses
+  // $env:LOCALAPPDATA\pkgx, and libpkgx's config.rs falls back to
+  // dirs_next::data_local_dir() which resolves to %LOCALAPPDATA% on
+  // Windows). pkgx itself doesn't model UAC elevation; we follow.
+  // Fallback path-join is a defensive equivalent for the rare runner
+  // missing the LOCALAPPDATA env var.
   if (Deno.build.os == "windows") {
-    return Path.home().join(".local");
+    const localAppData = Deno.env.get("LOCALAPPDATA") ??
+      join(Deno.env.get("USERPROFILE") ?? "", "AppData", "Local");
+    return new Path(join(localAppData, "pkgm"));
   }
   // if /usr/local is writable, use that
   if (writable("/usr/local")) {

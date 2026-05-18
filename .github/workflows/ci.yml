@@ -138,7 +138,12 @@ jobs:
           # $HOME/.pkgx with root-owned dirs. pkgm.ts's
           # reclaim_pkgx_cache_for() chowns those back to $SUDO_USER
           # before dropping privileges so the inner pkgx can write.
+          echo "::warning::diag pre-pkgx-owners: $(ls -ld $HOME/.pkgx 2>&1 | head -1)"
+          echo "::warning::diag pre-root-files: $(sudo find $HOME/.pkgx -uid 0 -print 2>/dev/null | head -10 | tr '\n' '|' || echo none)"
           sudo ./pkgm.ts i hyperfine
+          echo "::warning::diag post-pkgx-owners: $(ls -ld $HOME/.pkgx 2>&1 | head -1)"
+          echo "::warning::diag post-root-files: $(sudo find $HOME/.pkgx -uid 0 -print 2>/dev/null | head -10 | tr '\n' '|' || echo none)"
+          echo "::warning::diag post-root-count: $(sudo find $HOME/.pkgx -uid 0 -print 2>/dev/null | wc -l | tr -d ' ')"
           test -x /usr/local/bin/hyperfine
 
           # HOME override + privilege drop are validated via the pkg cache

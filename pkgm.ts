@@ -883,8 +883,13 @@ function reclaim_pkgx_cache_for(home: string, user: string): void {
   if (!existsSync(cache)) return;
   const find = existsSync("/usr/bin/find") ? "/usr/bin/find" : "/bin/find";
   try {
+    // `chown -h`: act on the symlink itself, not its target. Pkgx's
+    // versioned layout sprinkles v*, v<major>, v<major>.<minor> symlinks
+    // alongside the real version dirs; without -h chown would follow each
+    // link and chown the already-reclaimed target, leaving the link still
+    // root-owned (-h is in POSIX, present on both BSD and GNU chown).
     new Deno.Command(find, {
-      args: [cache, "-uid", "0", "-exec", "chown", user, "{}", "+"],
+      args: [cache, "-uid", "0", "-exec", "chown", "-h", user, "{}", "+"],
       stdout: "null",
       stderr: "null",
     }).outputSync();

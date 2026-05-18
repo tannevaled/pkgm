@@ -112,11 +112,17 @@ jobs:
   # Validates `sudo pkgm install` behaviour fixed in 2b33f20:
   #  - privilege drop so pkgx cache stays owned by $SUDO_USER, not root
   #  - HOME override so the cache lands under the invoking user's tree
-  #  - fallback to running pkgx as root when it lives under /root/.pkgx
+  #  - fallback to running pkgx as root when it lives under root's home
   #    and is therefore unreachable to $SUDO_USER (pkgxdev/pkgm#68)
-  # Linux-only: the /root/.pkgx scenario doesn't arise on macOS in practice.
+  # The root-home path differs by OS (/root on Linux, /var/root on macOS);
+  # we resolve it dynamically via `eval echo ~root` rather than hard-coding.
   sudo-install:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: pkgxdev/setup@v4
@@ -158,24 +164,30 @@ jobs:
 
       - name: sudo install falls back when pkgx is unreachable as $SUDO_USER
         # Must be last — this step strips pkgx from every location the
-        # runner user can reach, leaving only /root/.pkgx, which the
-        # subsequent shebang resolution still needs to walk through sudo.
+        # runner user can reach, leaving only root's private pkgx, which
+        # the subsequent shebang resolution still needs to walk through sudo.
         run: |
           set -eux
-          # Stage pkgx exclusively under /root so that reachable_as() returns
-          # false for the runner user and no alternative is found.
+          # Resolve root's home portably: /root on Linux, /var/root on macOS.
+          # Hard-coding /root would fail on macOS because the system volume
+          # is read-only and `sudo mkdir /root` can't create a new top-level
+          # dir without /etc/synthetic.conf.
+          root_home=$(eval echo ~root)
+
+          # Stage pkgx exclusively under root's home so that reachable_as()
+          # returns false for the runner user and no alternative is found.
           pkgx_src=$(command -v pkgx)
-          sudo mkdir -p /root/.pkgx/bin
-          sudo cp "$pkgx_src" /root/.pkgx/bin/pkgx
+          sudo mkdir -p "$root_home/.pkgx/bin"
+          sudo cp "$pkgx_src" "$root_home/.pkgx/bin/pkgx"
           # Wipe every alternative the resolver looks for:
           #   ~/.pkgx/pkgx.sh/v*/bin/pkgx, ~/.local/bin/pkgx, /usr/local/bin/pkgx
           rm -rf "$HOME/.pkgx"
           sudo rm -f /usr/local/bin/pkgx "$HOME/.local/bin/pkgx"
-          # Invoke pkgm.ts with the /root pkgx on PATH. `sudo env PATH=...`
+          # Invoke pkgm.ts with the staged pkgx on PATH. `sudo env PATH=...`
           # is the canonical way around the default secure_path policy in
-          # Ubuntu's sudoers.
+          # Ubuntu's sudoers; macOS sudo respects the explicit env too.
           set +e
-          out=$(sudo env PATH="/root/.pkgx/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" ./pkgm.ts i gum 2>&1)
+          out=$(sudo env PATH="$root_home/.pkgx/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" ./pkgm.ts i gum 2>&1)
           rc=$?
           set -e
           echo "$out"

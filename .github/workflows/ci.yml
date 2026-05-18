@@ -27,16 +27,10 @@ jobs:
   test:
     continue-on-error: true
     strategy:
-      fail-fast: false
       matrix:
         os:
           - macos-latest
           - ubuntu-latest
-          # Windows: scaffolding pass — steps below rely on shebang
-          # interpretation and POSIX paths, so most will fail until
-          # pkgm grows native Windows install/stub support. See the
-          # draft PR description for the open design questions.
-          - windows-latest
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -114,6 +108,58 @@ jobs:
       - run: |
           ./pkgm.ts i spotify_player
           spotify_player --version
+
+  # Scaffolding-pass smoke test for the Windows port. Uses an explicit
+  # `pkgx deno^2.1 run` invocation because the kernel doesn't interpret
+  # `#!/usr/bin/env -S pkgx …` shebangs on Windows; a `pkgm.cmd` wrapper
+  # that papers over this belongs in pkgxdev/setup's installer.ps1, not
+  # here. continue-on-error: true while the port is in progress.
+  test-windows:
+    continue-on-error: true
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pkgxdev/setup@v4
+
+      - name: smoke - pkgm --version
+        # Verifies the absolute floor: pkgx is on PATH, deno can run
+        # the script, libpkgx imports resolve on Windows, parseArgs +
+        # the `version` arm exit 0. No filesystem touching yet.
+        run: |
+          $denoArgs = @(
+            'deno^2.1', 'run', '--ext=ts',
+            '--allow-sys=uid', '--allow-run', '--allow-env',
+            '--allow-read', '--allow-write', '--allow-ffi',
+            '--allow-net=dist.pkgx.dev',
+            './pkgm.ts', '--version'
+          )
+          pkgx @denoArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: smoke - install hyperfine
+        # Exercises the install path end-to-end on Windows. Expected to
+        # fail at one of: pantry resolution (if no Windows build), the
+        # hardlink-fallback path in symlink_with_overwrite, or the .cmd
+        # emission step. Failure mode is the discovery signal for the
+        # next iteration.
+        run: |
+          $denoArgs = @(
+            'deno^2.1', 'run', '--ext=ts',
+            '--allow-sys=uid', '--allow-run', '--allow-env',
+            '--allow-read', '--allow-write', '--allow-ffi',
+            '--allow-net=dist.pkgx.dev',
+            './pkgm.ts', 'i', 'hyperfine'
+          )
+          pkgx @denoArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $expected = Join-Path $env:LOCALAPPDATA "pkgm\pkgs\crates.io\hyperfine"
+          if (!(Test-Path $expected)) {
+            Write-Error "expected hyperfine cache at $expected"
+            exit 1
+          }
 
   # Validates `sudo pkgm install` behaviour fixed in 2b33f20:
   #  - privilege drop so pkgx cache stays owned by $SUDO_USER, not root

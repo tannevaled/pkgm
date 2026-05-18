@@ -129,31 +129,20 @@ jobs:
 
       - name: sudo install drops privileges and overrides HOME
         run: |
-          # Diagnostic prelude (always-on while debugging macOS) — emits
-          # ::warning:: annotations visible via the check-runs/annotations
-          # API even when raw logs require auth.
-          echo "::warning::env uname=$(uname) user=$USER home=$HOME"
-          echo "::warning::env pkgx-path: $(command -v pkgx 2>&1 || echo none)"
-          echo "::warning::env pkgx-version: $(pkgx --version 2>&1 || echo none)"
-          echo "::warning::env sudo-pkgx-path: $(sudo bash -c 'command -v pkgx' 2>&1 || echo none)"
-
           set -eux
           # marker to scope checks to entries created by this install
           touch /tmp/pkgm-sudo-marker
-          set +e
-          sudo ./pkgm.ts i hyperfine 2> >(tee /tmp/pkgm-sudo.stderr >&2)
-          rc=$?
-          set -e
-          echo "::warning::diag install-exit: $rc"
-          # Dump stderr in chunks (annotations are limited to ~4KB each).
-          stripped=$(sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g; s/\r//g' /tmp/pkgm-sudo.stderr 2>/dev/null || true)
-          echo "::warning::diag stderr-len: ${#stripped}"
-          echo "::warning::diag stderr-tail: $(echo "$stripped" | tail -c 1500 | tr '\n' '|' || echo none)"
-          echo "::warning::diag stderr-head: $(echo "$stripped" | head -c 1500 | tr '\n' '|' || echo none)"
-          echo "::warning::diag user-new: $(sudo find $HOME/.pkgx -newer /tmp/pkgm-sudo-marker -print 2>/dev/null | head -6 | tr '\n' '|' || echo none)"
-          echo "::warning::diag roothome: $(eval echo ~root)"
-          echo "::warning::diag roothome-new: $(sudo find $(eval echo ~root)/.pkgx -newer /tmp/pkgm-sudo-marker -print 2>/dev/null | head -6 | tr '\n' '|' || echo none)"
-          test $rc -eq 0
+
+          # Why `sudo -H`: macOS sudoers keeps HOME in env_keep by default,
+          # so plain `sudo ./pkgm.ts` would preserve HOME=$HOME for the
+          # shebang's outer `pkgx --quiet deno^2.1 run …` invocation —
+          # which runs as ROOT and would then write root-owned dirs into
+          # $HOME/.pkgx for the deno self-cache. The inner pkgx (privilege-
+          # dropped back to $SUDO_USER) would then EACCES on those same
+          # dirs. `-H` resets HOME to root's home, matching Linux's default
+          # env_reset behaviour. Harmless on Linux (sudoers already does
+          # the same), required for hermetic test runs on macOS.
+          sudo -H ./pkgm.ts i hyperfine
           test -x /usr/local/bin/hyperfine
 
           # HOME override + privilege drop are validated via the pkg cache
@@ -208,7 +197,7 @@ jobs:
           # is the canonical way around the default secure_path policy in
           # Ubuntu's sudoers; macOS sudo respects the explicit env too.
           set +e
-          out=$(sudo env PATH="$root_home/.pkgx/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" ./pkgm.ts i gum 2>&1)
+          out=$(sudo -H env PATH="$root_home/.pkgx/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" ./pkgm.ts i gum 2>&1)
           rc=$?
           set -e
           echo "$out"

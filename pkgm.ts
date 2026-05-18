@@ -884,6 +884,11 @@ function pkgx_reachable_as(current: string, user: string): string | undefined {
               if (v.lt(PKGX_MIN_VERSION)) continue;
               const path = join(root, entry.name, "bin/pkgx");
               if (!existsSync(path)) continue;
+              // Directory-name version is a cheap pre-filter; verify the
+              // actual binary too, matching the other fallback paths so a
+              // stale or non-executable `v*/bin/pkgx` can't be returned
+              // (per #86 review).
+              if (!pkgx_meets_minimum(path)) continue;
               if (!best || v.gt(best.v)) best = { v, path };
             } catch {
               // skip malformed version dir

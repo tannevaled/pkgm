@@ -124,26 +124,33 @@ jobs:
       - name: sudo install drops privileges and overrides HOME
         run: |
           set -eux
-          # marker to scope ownership checks to files created by this install
+          # marker to scope checks to files created by this install
           touch /tmp/pkgm-sudo-marker
           sudo ./pkgm.ts i hyperfine
           test -x /usr/local/bin/hyperfine
-          # HOME override: pkgx must not have created anything under /root/.pkgx
-          # during this install. We scope the check to paths newer than the
-          # marker so a pre-existing /root/.pkgx from the runner image or
-          # setup action does not cause a false failure.
-          created_under_root=$(sudo find /root/.pkgx -newer /tmp/pkgm-sudo-marker -print 2>/dev/null || true)
-          if [ -n "$created_under_root" ]; then
-            echo "::error::pkgx cached under /root/.pkgx — HOME override failed"
-            echo "$created_under_root"
+
+          # HOME override + privilege drop are both validated via the pkg
+          # cache under $HOME/.pkgx. We deliberately do NOT assert that
+          # /root/.pkgx is empty: the shebang's `pkgx --quiet deno^2.1 run …`
+          # runs as root before any pkgm.ts code executes, and that outer
+          # pkgx caches under $HOME/.pkgx which resolves to /root/.pkgx
+          # under sudo. That cache is unavoidable and unrelated to whether
+          # pkgm's *inner* pkgx call dropped privileges.
+          #
+          # If pkgm's inner pkgx call dropped privileges and pointed HOME at
+          # the invoking user, the pkg cache lands under $HOME/.pkgx and is
+          # owned by the invoking user. If either step failed, the cache
+          # would be missing here or contain root-owned files.
+
+          new_files=$(sudo find "$HOME/.pkgx" -newer /tmp/pkgm-sudo-marker -type f -print 2>/dev/null | head -1 || true)
+          if [ -z "$new_files" ]; then
+            echo "::error::no new files under \$HOME/.pkgx — inner pkgx did not cache to invoking user's tree"
             exit 1
           fi
-          # Privilege drop: nothing newly created under ~/.pkgx should be
-          # owned by root. Any root-owned file here means pkgx ran as root
-          # despite SUDO_USER being set.
+
           owned_by_root=$(sudo find "$HOME/.pkgx" -newer /tmp/pkgm-sudo-marker -user root -print 2>/dev/null || true)
           if [ -n "$owned_by_root" ]; then
-            echo "::error::pkgx cache files created as root under \$HOME/.pkgx:"
+            echo "::error::pkgx cache files created as root under \$HOME/.pkgx — privilege drop failed:"
             echo "$owned_by_root"
             exit 1
           fi

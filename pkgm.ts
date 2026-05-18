@@ -199,6 +199,29 @@ async function install(args: string[], basePath: string) {
 
         const to_stub = join(dst, bin, entry.name);
 
+        if (Deno.build.os == "windows") {
+          // Emit a .cmd wrapper next to (and replacing) the hardlinked
+          // binary. PATHEXT lookup picks `.cmd` only if there's no
+          // `.exe` at the same stem, so we must remove the hardlink
+          // first or it would shadow the wrapper.
+          const stem = entry.name.replace(/\.(exe|bat|cmd)$/i, "");
+          const cmd_path = join(dst, bin, stem + ".cmd");
+          const target = join(bin_prefix, entry.name);
+          let cmd = "@echo off\r\n";
+          for (const [key, value] of Object.entries(env)) {
+            // Inside `set "K=V"` quotes the value is literal except for
+            // `%`, which cmd's parser still treats as variable-expand
+            // even when quoted. Escape as `%%` (batch-file convention).
+            const escaped = value.replace(/%/g, "%%");
+            cmd += `set "${key}=${escaped}"\r\n`;
+          }
+          cmd += `"${target}" %*\r\n`;
+          await Deno.remove(to_stub);
+          await Deno.writeTextFile(cmd_path, cmd);
+          rv.push(cmd_path);
+          continue;
+        }
+
         let sh = `#!/bin/sh\n`;
         for (const [key, value] of Object.entries(env)) {
           sh += `export ${key}="${value}"\n`;
@@ -210,12 +233,7 @@ async function install(args: string[], basePath: string) {
 
         await Deno.remove(to_stub); //FIXME inefficient to symlink for no reason
         await Deno.writeTextFile(to_stub, sh.trim() + "\n");
-        // Windows has no POSIX exec bit; Deno.chmod throws there. Stub
-        // content is still POSIX shell at this point — proper `.cmd`/`.ps1`
-        // stub emission is a separate TODO (see draft PR description).
-        if (Deno.build.os != "windows") {
-          await Deno.chmod(to_stub, 0o755);
-        }
+        await Deno.chmod(to_stub, 0o755);
 
         rv.push(to_stub);
       }
@@ -459,6 +477,15 @@ async function symlink(src: string, dst: string) {
 
 //FIXME we only do major as that's typically all pkgs need, but like we should do better
 async function create_v_symlinks(prefix: string) {
+  if (Deno.build.os == "windows") {
+    // Skipped on Windows for v1: directory aliases would need either a
+    // junction (mklink /J via subprocess — Deno has no native API) or a
+    // dir symlink (admin/dev-mode). Installed pkgs are still accessible
+    // via their canonical v<x.y.z> path, which is what the stubs and
+    // mirror_directory steps reference anyway. v1/v2/... aliases are a
+    // user-navigation convenience, not a runtime requirement.
+    return;
+  }
   const shelf = dirname(prefix);
 
   const versions = [];
@@ -534,6 +561,26 @@ function expand_runtime_env(json: JsonResponse, basePath: string) {
 function symlink_with_overwrite(src: string, dst: string) {
   if (existsSync(dst) && Deno.lstatSync(dst).isSymlink) {
     Deno.removeSync(dst);
+  }
+  if (Deno.build.os == "windows") {
+    // Windows: file symlinks need admin or developer mode. Hardlinks
+    // work without elevation as long as src and dst are on the same
+    // volume — true for our install (everything under
+    // %LOCALAPPDATA%\pkgm) once the pkg cache itself lives there. Fall
+    // back to a plain copy if even hardlink fails (cross-volume etc).
+    // Directory symlinks are handled by the caller skipping
+    // create_v_symlinks() on Windows.
+    const isDir = existsSync(src) && Deno.statSync(src).isDirectory;
+    if (isDir) {
+      Deno.symlinkSync(src, dst, { type: "dir" });
+    } else {
+      try {
+        Deno.linkSync(src, dst);
+      } catch {
+        Deno.copyFileSync(src, dst);
+      }
+    }
+    return;
   }
   Deno.symlinkSync(src, dst);
 }

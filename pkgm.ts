@@ -13,6 +13,13 @@ import { ensureDir, existsSync, walk } from "jsr:@std/fs@^1";
 import { parseArgs } from "jsr:@std/cli@^1";
 const { hydrate } = plumbing;
 
+// Module-scope SemVer literal: must be defined before any function that
+// reads it can be called from top-level code below. `const` declarations
+// are hoisted in name only (TDZ), so placing this further down the file
+// triggered "Cannot access 'PKGX_MIN_VERSION' before initialization" once
+// install()/get_pkgx() ran at module-init time.
+const PKGX_MIN_VERSION = new SemVer("2.4.0");
+
 function standardPath() {
   let path = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 
@@ -534,8 +541,6 @@ function symlink_with_overwrite(src: string, dst: string) {
   }
   Deno.symlinkSync(src, dst);
 }
-
-const PKGX_MIN_VERSION = new SemVer("2.4.0");
 
 function pkgx_meets_minimum(path: string): boolean {
   try {

@@ -129,10 +129,27 @@ jobs:
 
       - name: sudo install drops privileges and overrides HOME
         run: |
+          # Diagnostic prelude (always-on while debugging macOS) — emits
+          # ::warning:: annotations visible via the check-runs/annotations
+          # API even when raw logs require auth.
+          echo "::warning::env uname=$(uname) user=$USER home=$HOME"
+          echo "::warning::env pkgx-path: $(command -v pkgx 2>&1 || echo none)"
+          echo "::warning::env pkgx-version: $(pkgx --version 2>&1 || echo none)"
+          echo "::warning::env sudo-pkgx-path: $(sudo bash -c 'command -v pkgx' 2>&1 || echo none)"
+
           set -eux
           # marker to scope checks to entries created by this install
           touch /tmp/pkgm-sudo-marker
-          sudo ./pkgm.ts i hyperfine
+          set +e
+          sudo ./pkgm.ts i hyperfine 2> >(tee /tmp/pkgm-sudo.stderr >&2)
+          rc=$?
+          set -e
+          echo "::warning::diag install-exit: $rc"
+          echo "::warning::diag pkgm-stderr-head: $(head -c 600 /tmp/pkgm-sudo.stderr 2>/dev/null | tr '\n' '|' || echo none)"
+          echo "::warning::diag user-new: $(sudo find $HOME/.pkgx -newer /tmp/pkgm-sudo-marker -print 2>/dev/null | head -6 | tr '\n' '|' || echo none)"
+          echo "::warning::diag roothome: $(eval echo ~root)"
+          echo "::warning::diag roothome-new: $(sudo find $(eval echo ~root)/.pkgx -newer /tmp/pkgm-sudo-marker -print 2>/dev/null | head -6 | tr '\n' '|' || echo none)"
+          test $rc -eq 0
           test -x /usr/local/bin/hyperfine
 
           # HOME override + privilege drop are validated via the pkg cache

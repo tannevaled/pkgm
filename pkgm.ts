@@ -316,19 +316,16 @@ async function query_pkgx(
     if (isRoot && sudoUser) {
       const sudo_user_home = user_home(sudoUser);
 
-      // Warn if the caller's HOME survived sudo (typical macOS default —
-      // its sudoers keeps HOME in env_keep; most Linux distros reset it
-      // via env_reset). When HOME survives, the shebang's outer
-      // `pkgx --quiet deno^2.1 run …` invocation ran as root with HOME
-      // pointing at SUDO_USER's tree, so its self-cache likely created
+      // If sudo preserved HOME (typical macOS — sudoers keeps HOME in
+      // env_keep by default; most Linux distros reset it via env_reset),
+      // the shebang's outer `pkgx --quiet deno^2.1 run …` ran as root
+      // with HOME pointing at SUDO_USER's tree and its self-cache left
       // root-owned dirs under $SUDO_USER/.pkgx. The privilege-dropped
-      // inner pkgx below would then EACCES on those same dirs.
+      // inner pkgx below would then EACCES on those dirs and abort the
+      // install. Reclaim ownership for $SUDO_USER so the install can
+      // proceed without forcing the user to remember `sudo -H`.
       if (sudo_user_home && Deno.env.get("HOME") === sudo_user_home) {
-        console.error(
-          "%cwarning",
-          "color:yellow",
-          `\`sudo\` preserved HOME=${sudo_user_home}; pkgx's outer self-cache may have written root-owned dirs there. Re-run as \`sudo -H pkgm …\` if you hit a permission denied error (typical on macOS).`,
-        );
+        reclaim_pkgx_cache_for(sudo_user_home, sudoUser);
       }
 
       // Drop privileges so pkgx writes its cache as the invoking user, not root.
@@ -875,6 +872,25 @@ function user_home(user: string): string | undefined {
   }
 
   return user_home_from_passwd(user) ?? user_home_from_dscl(user);
+}
+
+function reclaim_pkgx_cache_for(home: string, user: string): void {
+  // Targeted chown: only files currently owned by root, not user-owned
+  // entries the caller may have placed under .pkgx for their own reasons.
+  // Best-effort — if find/chown aren't reachable the inner pkgx may still
+  // EACCES, but most invocations succeed.
+  const cache = join(home, ".pkgx");
+  if (!existsSync(cache)) return;
+  const find = existsSync("/usr/bin/find") ? "/usr/bin/find" : "/bin/find";
+  try {
+    new Deno.Command(find, {
+      args: [cache, "-uid", "0", "-exec", "chown", user, "{}", "+"],
+      stdout: "null",
+      stderr: "null",
+    }).outputSync();
+  } catch {
+    // best-effort
+  }
 }
 
 function pkgx_reachable_as(current: string, user: string): string | undefined {

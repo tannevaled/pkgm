@@ -132,17 +132,13 @@ jobs:
           set -eux
           # marker to scope checks to entries created by this install
           touch /tmp/pkgm-sudo-marker
-
-          # Why `sudo -H`: macOS sudoers keeps HOME in env_keep by default,
-          # so plain `sudo ./pkgm.ts` would preserve HOME=$HOME for the
-          # shebang's outer `pkgx --quiet deno^2.1 run …` invocation —
-          # which runs as ROOT and would then write root-owned dirs into
-          # $HOME/.pkgx for the deno self-cache. The inner pkgx (privilege-
-          # dropped back to $SUDO_USER) would then EACCES on those same
-          # dirs. `-H` resets HOME to root's home, matching Linux's default
-          # env_reset behaviour. Harmless on Linux (sudoers already does
-          # the same), required for hermetic test runs on macOS.
-          sudo -H ./pkgm.ts i hyperfine
+          # Plain `sudo` (no -H). This is what a typical user types. On
+          # macOS, sudoers keeps HOME in env_keep so the shebang's outer
+          # pkgx runs as root inside $SUDO_USER's tree and pollutes
+          # $HOME/.pkgx with root-owned dirs. pkgm.ts's
+          # reclaim_pkgx_cache_for() chowns those back to $SUDO_USER
+          # before dropping privileges so the inner pkgx can write.
+          sudo ./pkgm.ts i hyperfine
           test -x /usr/local/bin/hyperfine
 
           # HOME override + privilege drop are validated via the pkg cache
@@ -197,7 +193,7 @@ jobs:
           # is the canonical way around the default secure_path policy in
           # Ubuntu's sudoers; macOS sudo respects the explicit env too.
           set +e
-          out=$(sudo -H env PATH="$root_home/.pkgx/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" ./pkgm.ts i gum 2>&1)
+          out=$(sudo env PATH="$root_home/.pkgx/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" ./pkgm.ts i gum 2>&1)
           rc=$?
           set -e
           echo "$out"

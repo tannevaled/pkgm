@@ -145,7 +145,11 @@ jobs:
           rc=$?
           set -e
           echo "::warning::diag install-exit: $rc"
-          echo "::warning::diag pkgm-stderr-head: $(head -c 600 /tmp/pkgm-sudo.stderr 2>/dev/null | tr '\n' '|' || echo none)"
+          # Dump stderr in chunks (annotations are limited to ~4KB each).
+          stripped=$(sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g; s/\r//g' /tmp/pkgm-sudo.stderr 2>/dev/null || true)
+          echo "::warning::diag stderr-len: ${#stripped}"
+          echo "::warning::diag stderr-tail: $(echo "$stripped" | tail -c 1500 | tr '\n' '|' || echo none)"
+          echo "::warning::diag stderr-head: $(echo "$stripped" | head -c 1500 | tr '\n' '|' || echo none)"
           echo "::warning::diag user-new: $(sudo find $HOME/.pkgx -newer /tmp/pkgm-sudo-marker -print 2>/dev/null | head -6 | tr '\n' '|' || echo none)"
           echo "::warning::diag roothome: $(eval echo ~root)"
           echo "::warning::diag roothome-new: $(sudo find $(eval echo ~root)/.pkgx -newer /tmp/pkgm-sudo-marker -print 2>/dev/null | head -6 | tr '\n' '|' || echo none)"

@@ -123,11 +123,30 @@ jobs:
 
       - name: sudo install drops privileges and overrides HOME
         run: |
-          set -eux
+          set -ux
           # marker to scope checks to files created by this install
           touch /tmp/pkgm-sudo-marker
-          sudo ./pkgm.ts i hyperfine
+          # Run pkgm with PKGM_DEBUG so the "is not reachable as $USER"
+          # diagnostic surfaces when pkgx_reachable_as falls through; we
+          # tee stderr so the diagnostic is visible in the job log as well
+          # as captured for the warning emission below.
+          sudo PKGM_DEBUG=1 ./pkgm.ts i hyperfine 2> >(tee /tmp/pkgm-sudo.stderr >&2)
+          rc=$?
+          set -e
+          test $rc -eq 0
           test -x /usr/local/bin/hyperfine
+
+          # Surface enough state as ::warning:: annotations to diagnose
+          # which branch query_pkgx() took. Failure cases:
+          #  - "pkgx_reachable_as returned undefined" → privilege drop
+          #    skipped → pkgx runs as root with HOME=/root → cache lands
+          #    under /root/.pkgx, none under $HOME/.pkgx.
+          #  - "user_home() failed" → reachable_as falls through to its
+          #    /home/<user>/ rejection regex.
+          echo "::warning::diag pkgx-via-sudo: $(sudo command -v pkgx 2>&1 || echo none)"
+          echo "::warning::diag root-new-files: $(sudo find /root/.pkgx -newer /tmp/pkgm-sudo-marker -print 2>/dev/null | head -8 | tr '\n' '|' || echo none)"
+          echo "::warning::diag user-new-files: $(sudo find $HOME/.pkgx -newer /tmp/pkgm-sudo-marker -print 2>/dev/null | head -8 | tr '\n' '|' || echo none)"
+          echo "::warning::diag pkgm-stderr: $(tr '\n' '|' < /tmp/pkgm-sudo.stderr | head -c 500 || echo none)"
 
           # HOME override + privilege drop are both validated via the pkg
           # cache under $HOME/.pkgx. We deliberately do NOT assert that
@@ -136,11 +155,6 @@ jobs:
           # pkgx caches under $HOME/.pkgx which resolves to /root/.pkgx
           # under sudo. That cache is unavoidable and unrelated to whether
           # pkgm's *inner* pkgx call dropped privileges.
-          #
-          # If pkgm's inner pkgx call dropped privileges and pointed HOME at
-          # the invoking user, the pkg cache lands under $HOME/.pkgx and is
-          # owned by the invoking user. If either step failed, the cache
-          # would be missing here or contain root-owned files.
 
           new_files=$(sudo find "$HOME/.pkgx" -newer /tmp/pkgm-sudo-marker -type f -print 2>/dev/null | head -1 || true)
           if [ -z "$new_files" ]; then

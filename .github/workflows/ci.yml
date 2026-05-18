@@ -27,10 +27,16 @@ jobs:
   test:
     continue-on-error: true
     strategy:
+      fail-fast: false
       matrix:
         os:
           - macos-latest
           - ubuntu-latest
+          # Windows: scaffolding pass — steps below rely on shebang
+          # interpretation and POSIX paths, so most will fail until
+          # pkgm grows native Windows install/stub support. See the
+          # draft PR description for the open design questions.
+          - windows-latest
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

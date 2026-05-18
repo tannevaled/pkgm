@@ -13,7 +13,23 @@ import { ensureDir, existsSync, walk } from "jsr:@std/fs@^1";
 import { parseArgs } from "jsr:@std/cli@^1";
 const { hydrate } = plumbing;
 
+// Path-separator: `;` on Windows, `:` on POSIX. Used everywhere we
+// split or join $PATH, since C:\ on Windows would tokenise wrong with `:`.
+const PATH_SEP = Deno.build.os == "windows" ? ";" : ":";
+
 function standardPath() {
+  if (Deno.build.os == "windows") {
+    // Windows: no /usr/local hierarchy and no homebrew. Return the
+    // baseline system dirs so subprocesses can still locate built-in
+    // commands (cmd, find, etc.) when we feed them an explicit PATH.
+    const systemRoot = Deno.env.get("SystemRoot") ?? "C:\\Windows";
+    return [
+      `${systemRoot}\\System32`,
+      systemRoot,
+      `${systemRoot}\\System32\\Wbem`,
+    ].join(PATH_SEP);
+  }
+
   let path = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 
   // for pkgx installed via homebrew
@@ -194,7 +210,12 @@ async function install(args: string[], basePath: string) {
 
         await Deno.remove(to_stub); //FIXME inefficient to symlink for no reason
         await Deno.writeTextFile(to_stub, sh.trim() + "\n");
-        await Deno.chmod(to_stub, 0o755);
+        // Windows has no POSIX exec bit; Deno.chmod throws there. Stub
+        // content is still POSIX shell at this point — proper `.cmd`/`.ps1`
+        // stub emission is a separate TODO (see draft PR description).
+        if (Deno.build.os != "windows") {
+          await Deno.chmod(to_stub, 0o755);
+        }
 
         rv.push(to_stub);
       }
@@ -204,7 +225,7 @@ async function install(args: string[], basePath: string) {
   if (
     !Deno.env
       .get("PATH")
-      ?.split(":")
+      ?.split(PATH_SEP)
       ?.includes(new Path(basePath).join("bin").string)
   ) {
     console.error(
@@ -518,8 +539,9 @@ function symlink_with_overwrite(src: string, dst: string) {
 }
 
 function get_pkgx() {
-  for (const path of Deno.env.get("PATH")!.split(":")) {
-    const pkgx = join(path, "pkgx");
+  const exe = Deno.build.os == "windows" ? "pkgx.exe" : "pkgx";
+  for (const path of Deno.env.get("PATH")!.split(PATH_SEP)) {
+    const pkgx = join(path, exe);
     if (existsSync(pkgx)) {
       const out = new Deno.Command(pkgx, { args: ["--version"] }).outputSync();
       const stdout = new TextDecoder().decode(out.stdout);
@@ -758,6 +780,14 @@ async function update() {
 }
 
 function install_prefix() {
+  // Windows has no /usr/local analogue; the per-user prefix is the
+  // only sensible default for now. System-wide installs on Windows
+  // (e.g. under %ProgramFiles%) require UAC elevation modelling and
+  // are out of scope for the initial port — see the draft PR
+  // description for the design questions.
+  if (Deno.build.os == "windows") {
+    return Path.home().join(".local");
+  }
   // if /usr/local is writable, use that
   if (writable("/usr/local")) {
     return new Path("/usr/local");

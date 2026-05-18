@@ -535,18 +535,28 @@ function symlink_with_overwrite(src: string, dst: string) {
   Deno.symlinkSync(src, dst);
 }
 
+const PKGX_MIN_VERSION = new SemVer("2.4.0");
+
+function pkgx_meets_minimum(path: string): boolean {
+  try {
+    const out = new Deno.Command(path, { args: ["--version"] }).outputSync();
+    if (!out.success) return false;
+    const match = new TextDecoder().decode(out.stdout).match(
+      /^pkgx (\d+\.\d+\.\d+)/,
+    );
+    if (!match) return false;
+    return new SemVer(match[1]).gte(PKGX_MIN_VERSION);
+  } catch {
+    return false;
+  }
+}
+
 function get_pkgx() {
   for (const path of Deno.env.get("PATH")!.split(":")) {
     const pkgx = join(path, "pkgx");
-    if (existsSync(pkgx)) {
-      const out = new Deno.Command(pkgx, { args: ["--version"] }).outputSync();
-      const stdout = new TextDecoder().decode(out.stdout);
-      const match = stdout.match(/^pkgx (\d+\.\d+\.\d+)/);
-      if (!match || new SemVer(match[1]).lt(new SemVer("2.4.0"))) {
-        Deno.exit(1);
-      }
-      return pkgx;
-    }
+    if (!existsSync(pkgx)) continue;
+    if (!pkgx_meets_minimum(pkgx)) Deno.exit(1);
+    return pkgx;
   }
   throw new Error("no `pkgx` found in `$PATH`");
 }
@@ -847,11 +857,16 @@ function user_home(user: string): string | undefined {
 }
 
 function pkgx_reachable_as(current: string, user: string): string | undefined {
+  // The caller has already enforced PKGX_MIN_VERSION for `current` via
+  // get_pkgx(); fallback candidates have not, so each return path below
+  // re-checks with pkgx_meets_minimum() to avoid handing back an
+  // unsupported binary (per #86 review).
   if (reachable_as(current, user)) return current;
 
   const home = user_home(user);
   if (home) {
-    // Versioned pkgx.sh layout: ~/.pkgx/pkgx.sh/v<x.y.z>/bin/pkgx — pick the highest.
+    // Versioned pkgx.sh layout: ~/.pkgx/pkgx.sh/v<x.y.z>/bin/pkgx — pick the
+    // highest version that meets the minimum.
     const root = join(home, ".pkgx/pkgx.sh");
     if (existsSync(root)) {
       let best: { v: SemVer; path: string } | undefined;
@@ -861,10 +876,13 @@ function pkgx_reachable_as(current: string, user: string): string | undefined {
             if (!entry.isDirectory || !entry.name.startsWith("v")) continue;
             try {
               const v = new SemVer(entry.name.slice(1));
+              if (v.lt(PKGX_MIN_VERSION)) continue;
               const path = join(root, entry.name, "bin/pkgx");
               if (!existsSync(path)) continue;
               if (!best || v.gt(best.v)) best = { v, path };
-            } catch { /* skip malformed version dir */ }
+            } catch {
+              // skip malformed version dir
+            }
           }
         }
       } catch {
@@ -873,9 +891,14 @@ function pkgx_reachable_as(current: string, user: string): string | undefined {
       if (best) return best.path;
     }
     const local = join(home, ".local/bin/pkgx");
-    if (existsSync(local)) return local;
+    if (existsSync(local) && pkgx_meets_minimum(local)) return local;
   }
-  if (existsSync("/usr/local/bin/pkgx")) return "/usr/local/bin/pkgx";
+  if (
+    existsSync("/usr/local/bin/pkgx") &&
+    pkgx_meets_minimum("/usr/local/bin/pkgx")
+  ) {
+    return "/usr/local/bin/pkgx";
+  }
   return undefined;
 }
 
@@ -885,6 +908,14 @@ function reachable_as(p: string, user: string): boolean {
   // user's own home are assumed reachable.
   const home = user_home(user);
   if (home && (p === home || p.startsWith(`${home}/`))) return true;
+
+  // Shared Linuxbrew prefix lives under /home but is world-traversable and
+  // is treated as a system pkgx location by standardPath(). Without this
+  // exemption a pkgx installed via Linuxbrew would force the root-execution
+  // fallback, recreating the root-owned cache problem this code avoids
+  // (per #86 review). Honour $HOMEBREW_PREFIX in case it's elsewhere.
+  const brew = Deno.env.get("HOMEBREW_PREFIX") ?? "/home/linuxbrew/.linuxbrew";
+  if (p === brew || p.startsWith(`${brew}/`)) return true;
 
   if (p === "/root" || p.startsWith("/root/")) return false;
   if (p === "/var/root" || p.startsWith("/var/root/")) return false;

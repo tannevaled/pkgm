@@ -115,11 +115,15 @@ jobs:
   # that papers over this belongs in pkgxdev/setup's installer.ps1, not
   # here.
   #
-  # End-to-end install can't be exercised yet: a probe of all 842
-  # top-level prefixes in dist.pkgx.dev (the bucket pkgx pulls from)
-  # finds zero packages with a `windows/` subdir. pkgm install is
-  # blocked on upstream shipping Windows artifacts; we test what we
-  # can — that pkgm runs at all on Windows.
+  # End-to-end install can't be exercised yet: the v2 dist layout
+  # (`v2/<pkg>/windows/x86-64/`) has 15 toolchain-layer packages built
+  # for Windows (bun, cmake, curl, deno, git, go, libarchive, nasm,
+  # ninja, openssl, perl, python, rust, sqlite, zlib) — no application
+  # packages. Per pkgxdev/pkgx#607 the manifest pipeline that
+  # produced them was rolled back about a year ago, so no new Windows
+  # builds are being shipped. We test what we can — that pkgm runs at
+  # all on Windows — and the install path will start passing once the
+  # upstream build pipeline comes back online.
   test-windows:
     runs-on: windows-latest
     defaults:

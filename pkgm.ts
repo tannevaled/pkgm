@@ -314,6 +314,23 @@ async function query_pkgx(
 
   if (isSystemPrefix) {
     if (isRoot && sudoUser) {
+      const sudo_user_home = user_home(sudoUser);
+
+      // Warn if the caller's HOME survived sudo (typical macOS default —
+      // its sudoers keeps HOME in env_keep; most Linux distros reset it
+      // via env_reset). When HOME survives, the shebang's outer
+      // `pkgx --quiet deno^2.1 run …` invocation ran as root with HOME
+      // pointing at SUDO_USER's tree, so its self-cache likely created
+      // root-owned dirs under $SUDO_USER/.pkgx. The privilege-dropped
+      // inner pkgx below would then EACCES on those same dirs.
+      if (sudo_user_home && Deno.env.get("HOME") === sudo_user_home) {
+        console.error(
+          "%cwarning",
+          "color:yellow",
+          `\`sudo\` preserved HOME=${sudo_user_home}; pkgx's outer self-cache may have written root-owned dirs there. Re-run as \`sudo -H pkgm …\` if you hit a permission denied error (typical on macOS).`,
+        );
+      }
+
       // Drop privileges so pkgx writes its cache as the invoking user, not root.
       // But only if pkgx is reachable from sudoUser — otherwise the inner sudo
       // aborts with "unable to execute …: Permission denied" (pkgxdev/pkgm#68).
@@ -323,8 +340,7 @@ async function query_pkgx(
         cmd_args = ["-u", sudoUser, "--", reachable, ...args];
         // Override HOME, or pkgx will cache back under /root/ where sudoUser
         // can't reach it on the next invocation.
-        const home = user_home(sudoUser);
-        if (home) env.HOME = home;
+        if (sudo_user_home) env.HOME = sudo_user_home;
       } else if (Deno.env.get("PKGM_DEBUG")) {
         console.error(
           `pkgm: \`pkgx\` at ${pkgx} is not reachable as ${sudoUser}; running it as root`,
